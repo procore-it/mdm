@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "(SO0017) - The AWS CloudFormation template for deployment of the AWS Data Lake resources. Version v2.2"
+Resources:
+  DatalakeManagedPolicies:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      ManagedPolicyName: DataLakeUserPolicy
+      Description: datalake access policy
+      Path: '/'
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+                - lakeformation:GetDataAccess,
+                - glue:GetTable,
+                - glue:GetTables,
+                - glue:SearchTables
+                - glue:GetDatabase,
+                - glue:GetDatabases,
+                - glue:GetPartitions,
+                - lakeformation:GetResourceLFTags,
+                - lakeformation:ListLFTags,
+                - lakeformation:GetLFTag,
+                - lakeformation:SearchTablesByLFTags,
+                - lakeformation:SearchDatabasesByLFTags,
+                - lakeformation:GetWorkUnits,
+                - lakeformation:StartQueryPlanning,
+                - lakeformation:GetWorkUnitResults,
+                - lakeformation:GetQueryState,
+                - lakeformation:GetQueryStatistics
+            Resource: "*"
+          - Effect: Allow
+            Action: 
+                - s3:GetObject,
+                - s3:PutObject,
+                - s3:AbortMultipartUpload,
+                - s3:ListMultipartUploadParts,
+                - s3:DeleteObject
+            Resource: "arn:aws:s3:::mdm-govern-data-test/AthenaLogs/*"
+
+  DatalakeRevUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: rev_analyst
+      ManagedPolicyArns: 
+        - !Ref DatalakeManagedPolicies
+        - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2FullAccess
+
+  DatalakeHRUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: hr_analyst
+      ManagedPolicyArns: 
+        - !Ref DatalakeManagedPolicies
+        - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2FullAccess

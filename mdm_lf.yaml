@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "(SO0017) - The AWS CloudFormation template for deployment of the AWS Data Lake resources. Version v2.2"
+Resources:
+  LFDataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins: AWSReservedSSO_PowerUserAccess_c3a1f70e142479b6
+  lakeformationAdminPolicy:
+    Type: AWS::IAM::Policy
+    Properties:   
+      PolicyName: lakeformationAdminPolicy 
+      PolicyDocument: 
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+              {
+                  "Sid": "LakeFormationDataAccessPermissionsForS3",
+                  "Effect": "Allow",
+                  "Action": [
+                      "s3:PutObject",
+                      "s3:GetObject",
+                      "s3:DeleteObject"
+                  ],
+                  "Resource": [
+                      "arn:aws:s3:::mdm-govern-data-test/mdm/*",
+                      "arn:aws:s3:::procoreit-edp-stage/local_dev/bci/*",
+                      "arn:aws:s3:::procore-pdl-esticom/esti-prod_Copy/*"
+                  ]
+              },
+              {
+                  "Sid": "LakeFormationDataAccessPermissionsForS3ListBucket",
+                  "Effect": "Allow",
+                  "Action": [
+                      "s3:ListBucket"
+                  ],
+                  "Resource": [
+                      "arn:aws:s3:::procore-pdl-esticom",
+                      "arn:aws:s3:::procoreit-edp-stage",
+                      "arn:aws:s3:::mdm-govern-data-test"
+                  ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                    "s3:ListAllMyBuckets"
+                ],
+                "Resource": [
+                    "arn:aws:s3:::*"
+                ]
+              }
+          ]
+      }
+      Roles: 
+        - !Ref LFRegisterLocationServiceRole
+  LFRegisterLocationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lakeformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      RoleName: LFRegisterLocationServiceRole-mdm
+      Path: /
+      #Policies:
+      #  - !Ref lakeformationAdminPolicy
+  LFQueryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFQueryPolicy-mdm
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - lakeformation:StartTransaction
+              - lakeformation:CommitTransaction
+              - lakeformation:CancelTransaction
+              - lakeformation:ExtendTransaction
+              - lakeformation:PlanQuery
+              - lakeformation:StartQueryPlanning
+              - lakeformation:GetTableObjects
+              - lakeformation:GetQueryState
+              - lakeformation:GetWorkUnits
+              - lakeformation:Execute
+              - lakeformation:GetWorkUnitResults
+            Resource: "*"
+          -
+            Effect: "Allow"
+            Action:
+              - execute-api:Invoke
+            Resource: arn:aws:execute-api:*:*:*/*/POST/reportStatus
+      Roles:
+        - AWSReservedSSO_PowerUserAccess_c3a1f70e142479b6
+
+  LFLocationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFLocationPolicy-mdm
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - execute-api:Invoke
+            Resource: arn:aws:execute-api:*:*:*/*/POST/reportStatus
+          -
+            Effect: "Allow"
+            Action:
+              - lakeformation:StartTransaction
+              - lakeformation:CommitTransaction
+              - lakeformation:CancelTransaction
+              - lakeformation:GetTableObjects
+              - lakeformation:UpdateTableObjects
+            Resource: "*"
+          -
+            Effect: "Allow"
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTableVersions
+              - glue:GetPartitions
+              - glue:GetTable
+              - glue:GetTables
+              - glue:UpdateTable
+            Resource: "*"
+      Roles:
+        - !Ref LFRegisterLocationServiceRole
+  LFDataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    Properties: 
+      ResourceArn: arn:aws:s3:::mdm-govern-data-test
+      RoleArn: !GetAtt 'LFRegisterLocationServiceRole.Arn'
+      UseServiceLinkedRole: false 
+  LFDataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    Properties: 
+      ResourceArn: arn:aws:s3:::mdm-govern-data-test
+      RoleArn: !GetAtt 'LFRegisterLocationServiceRole.Arn'
+      UseServiceLinkedRole: false
+
+  LFDatabasePermissionForLFRegisterLocationServiceRole:
+    DependsOn:
+      - LFRegisterLocationServiceRole
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt 'LFRegisterLocationServiceRole.Arn'
+      Permissions:
+        - ALTER
+        - CREATE_TABLE
+        - DESCRIBE
+        - DROP
+      Resource:
+        DatabaseResource:
+          Name: mdm
+
+  LFDatabasePermissionForDataLakeAdminUser:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: AWSReservedSSO_PowerUserAccess_c3a1f70e142479b6
+      Permissions:
+        - ALL
+        - ALTER
+        - CREATE_TABLE
+        - DESCRIBE
+        - DROP
+      PermissionsWithGrantOption:
+        - ALL
+        - ALTER
+        - CREATE_TABLE
+        - DESCRIBE
+        - DROP
+      Resource:
+        DatabaseResource:
+          Name: mdm
+
+        

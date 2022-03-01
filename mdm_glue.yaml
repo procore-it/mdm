@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "(SO0017) - The AWS CloudFormation template for deployment of the AWS Data Lake resources. Version v2.2"
+Resources:
+  # Create S3
+  lakeformationS3bucket:
+    Type: AWS::S3::Bucket
+      Properties: 
+        BucketName: mdm-govern-data-test
+        #BucketEncryption: 
+        #  BucketEncryption
+  # Create an AWS Glue database
+  mdm:
+    Type: AWS::Glue::Database
+    Properties:
+      # The database is created in the Data Catalog for your account
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: mdm
+      DatabaseInput:
+        # The name of the database is defined in the Parameters section above
+        Description: MDM Database
+        LocationUri: s3://mdm-govern-data-test/mdm/
+  #Create IAM Role assumed by the crawler. this role is given all permissions.
+  AWSGlueServiceRolemdmcrawler:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "*"
+                Resource: "*"
+  #Work flow
+  mdmEmailworkflow:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Description: Glue workflow that tracks specified triggers, jobs, and crawlers as a single entity
+      Name: mdm_wf
+  # Glue Triggers
+  TriggerJobmdmEmailworkflowStart:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: mdm_wf_trigger
+      Type: ON_DEMAND
+      StartOnCreation: false
+      WorkflowName: !Ref mdmEmailworkflow
+      Actions:
+        - JobName: !Ref emailMask
+  emailMask:
+    Type: AWS::Glue::Job
+    Properties:
+      Role: !GetAtt AWSGlueServiceRolemdmcrawler.Arn
+      #DefaultArguments: JSON object
+      # If script written in Scala, then set DefaultArguments={'--job-language'; 'scala', '--class': 'your python class'}
+      #Connections:  No connection needed for S3 to S3 job
+      #  ConnectionsList
+      #MaxRetries: Double
+      Description: Mask the Email address in staffing table
+      #LogUri: String
+      Command:
+        Name: glueetl
+        ScriptLocation:
+          s3://mdm-govern-data-test/sourcecode/emailmask.py
+          # for access to directories use proper IAM role with permission to buckets and folders that begin with "aws-glue-"
+          # script uses temp directory from job definition if required (temp directory not used S3 to S3)
+          # script defines target for output as s3://aws-glue-target/sal
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Name: emailMask
+  TriggerJobmdmEmailworkflowEnd:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: mask_data_crawler
+      Type: CONDITIONAL
+      StartOnCreation: false
+      WorkflowName: !Ref mdmEmailworkflow
+      Actions:
+        - JobName: !Ref mdmcrawler
+      Predicate:
+        Conditions:
+          - JobName: !Ref emailMask
+            LogicalOperator: EQUALS
+            State: SUCCEEDED
+  #Create a crawler to crawl the mdm data on a S3 bucket
+  mdmcrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: mdmcrawler
+      Role: !GetAtt AWSGlueServiceRolemdmcrawler.Arn
+      #Classifiers: none, use the default classifier
+      Description: AWS Glue crawler to crawl mdm data
+      #Schedule: none, use default run-on-demand
+      DatabaseName: mdm
+      Targets:
+        S3Targets:
+          - Path: "s3://mdm-govern-data-test/mdm"
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Configuration: '{"Version":1.0,"CrawlerOutput":{"Partitions":{"AddOrUpdateBehavior":"InheritFromTable"},"Tables":{"AddOrUpdateBehavior":"MergeNewColumns"}}}'
