@@ -38,13 +38,34 @@ Resources:
                 - s3:ListMultipartUploadParts,
                 - s3:DeleteObject
             Resource: "arn:aws:s3:::mdm-govern-data-test/AthenaLogs/*"
-
+  RevUserGroup:
+    Type: 'AWS::IAM::Group'
+    Properties:
+      GroupName: RevUserGroup 
+      Path: '/'
+      ManagedPolicyArns: 
+        - !Ref DatalakeManagedPolicies
+        - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2FullAccess
+  HRUserGroup:
+    Type: 'AWS::IAM::Group'
+    Properties:
+      GroupName: HRUserGroup 
+      Path: '/'
+      ManagedPolicyArns: 
+        - !Ref DatalakeManagedPolicies
+        - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2FullAccess      
   DatalakeRevUser:
     Type: AWS::IAM::User
     Properties:
       UserName: rev_analyst
       ManagedPolicyArns: 
-        - !Ref DatalakeManagedPolicies
+        #Add any additional Policies if needed
         - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
         - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
         - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
@@ -55,8 +76,20 @@ Resources:
     Properties:
       UserName: hr_analyst
       ManagedPolicyArns: 
-        - !Ref DatalakeManagedPolicies
+        #Add any additional Policies if needed
         - arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess
         - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditor
         - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
         - arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2FullAccess
+  RevUserToGroupAddition:
+    Type: 'AWS::IAM::UserToGroupAddition'
+    Properties:
+      GroupName: !Ref RevUserGroup 
+      Users: # list of existing user names
+          - !Ref DatalakeRevUser
+  HRUserToGroupAddition:
+    Type: 'AWS::IAM::UserToGroupAddition'
+    Properties:
+      GroupName: !Ref HRUserGroup 
+      Users: # list of existing user names
+          - !Ref DatalakeHRUser
