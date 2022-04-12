@@ -1,0 +1,471 @@
+Description: API Gateway integration with SQS
+Outputs:
+  ApiEndpoint:
+    Description: Endpoint for this stage of the api
+    Value: !Join
+      - ''
+      - - https://
+        - !Ref 'APIGateway'
+        - .execute-api.
+        - !Ref 'AWS::Region'
+        - .amazonaws.com/
+        - dev
+Parameters:
+  validatorName:
+    Type: String
+    Default: EventTableValidator
+  validateRequestBody:
+    Type: String
+    Default: true
+  validateRequestParameters:
+    Type: String
+    Default: true
+Resources:
+  APIGateway:
+    Properties:
+      Description: API Endpoint to receive JSON payloads and queue in SQS
+      Name: MDMAPIGateway
+    Type: AWS::ApiGateway::RestApi
+  APIGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action: sqs:SendMessage
+                Effect: Allow
+                Resource: 
+                  - !GetAtt 'MDMQueue.Arn'
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: apig-sqs-send-msg-policy
+      RoleName: mdm-sqs-send-msg-role
+    
+  EventTableModel:
+    Type: 'AWS::ApiGateway::Model'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ContentType: application/json
+      Description: Schema for event table
+      Name: EventTableModel
+      Schema: 
+        {
+          "$schema": "http://json-schema.org/draft-04/schema#",
+          "type": "object",
+          "title": "Event",
+          "properties": {
+            "source_system_name": {
+              "type": "string"
+            },
+            "source_bucket": {
+              "type": "string"
+            },
+            "destination_bucket": {
+              "type": "string"
+            },
+            "persona": {
+              "type": "string"
+            },
+            "expiration_timestamp": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source_system_name",
+            "source_bucket",
+            "destination_bucket",
+            "persona",
+            "expiration_timestamp"
+          ]
+        }
+  RequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: !Ref validatorName
+      RestApiId: !Ref APIGateway
+      ValidateRequestBody: !Ref validateRequestBody
+      ValidateRequestParameters: !Ref validateRequestParameters
+  MDMQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 1209600
+      QueueName: 'mdm-logs-queue'
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 30
+  PolicySQS:
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: SQS:*
+            Effect: Allow
+            Principal: '*'
+            Resource: '*'            
+            Sid: Sid1251731803252
+        Version: '2012-10-17'
+      Queues:
+        - !Ref 'MDMQueue'
+    Type: AWS::SQS::QueuePolicy
+  MDMPostMethod:
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt 'APIGatewayRole.Arn'
+        IntegrationHttpMethod: POST
+        IntegrationResponses:
+          - StatusCode: '200'
+        PassthroughBehavior: NEVER
+        RequestParameters:
+          integration.request.header.Content-Type: '''application/x-www-form-urlencoded'''
+        RequestTemplates:
+          application/json: Action=SendMessage&MessageBody=$input.body
+        Type: AWS
+        Uri: !Join
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - :sqs:path/
+            - !Ref 'AWS::AccountId'
+            - /
+            - 'mdm-logs-queue'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: '200'
+      RequestModels:
+        application/json: !Ref EventTableModel
+      ResourceId: !Ref 'logsResource'
+      RequestValidatorId: !Ref RequestValidator
+      RestApiId: !Ref 'APIGateway'
+    Type: AWS::ApiGateway::Method
+  logsResource:
+    Properties:
+      ParentId: !Ref 'MDMResource'
+      PathPart: logs
+      RestApiId: !Ref 'APIGateway'
+    Type: AWS::ApiGateway::Resource
+  prodDeployment:
+    DependsOn: 
+      -  MDMPostMethod
+    Properties:
+      RestApiId: !Ref 'APIGateway'
+    Type: AWS::ApiGateway::Deployment
+  prodStage:
+    Properties:
+      DeploymentId: !Ref 'prodDeployment'
+      RestApiId: !Ref 'APIGateway'
+      StageName: prod
+    Type: AWS::ApiGateway::Stage
+  MDMResource:
+    Properties:
+      ParentId: !GetAtt 'APIGateway.RootResourceId'
+      PathPart: MDM
+      RestApiId: !Ref 'APIGateway'
+    Type: AWS::ApiGateway::Resource
+# adding aws lambda and triggers
+  MDMLambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/mdm-logs-lambda'
+      RetentionInDays: 3
+  MDMLambdaRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn:
+      - MDMQueue
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub 'mdm-lambda-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/mdm-logs-lambda:*:*'
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: 
+                  - !GetAtt MDMQueue.Arn
+              - Effect: Allow
+                Action: 
+                  - s3:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - glue:GetJobs
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                  - glue:ListJobs
+                  - glue:GetJobRuns
+                  - glue:GetJob
+                Resource: '*'
+  MDMLambdaSourceMapping:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    DependsOn:
+      - MDMQueue
+      - MDMLogsLambda
+    Properties:
+      BatchSize: 5
+      Enabled: true
+      EventSourceArn: !GetAtt MDMQueue.Arn
+      FunctionName: !GetAtt MDMLogsLambda.Arn
+  MDMS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: pdp-ops-ppp-dev
+
+  MDMLogsLambda:
+    Type: 'AWS::Lambda::Function'
+    DependsOn:
+      - MDMLambdaRole
+      - MDMLambdaLogGroup
+    Properties:
+      Description: 'SQS triggered lambda.'
+      FunctionName: !Sub 'mdm-logs-lambda'
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 30
+      TracingConfig:
+        Mode: Active
+      Role: !GetAtt MDMLambdaRole.Arn
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import boto3
+          import datetime
+          import json
+
+          # current-date = datetime.date.today()
+          def lambda_handler(event, context):
+          # print(event)
+            current_date = str(datetime.date.today())
+            client = boto3.client('glue')
+            for record in event['Records']:
+              print("client-created")
+              payload = json.loads(record["body"])
+              source_system_name = str(payload["source_system_name"])
+              source_bucket = str(payload["source_bucket"])
+              destination_bucket = str(payload["destination_bucket"])
+              persona = str(payload["persona"])
+              expiration_timestamp = str(payload["expiration_timestamp"])
+              print("paylaod proceesed")
+              #payload.pop("source_system_name")
+              #payload.pop("event_outcome")
+              response = client.start_job_run(
+                JobName='MDMDataMask',
+                Arguments={
+                    '--source_system_name': source_system_name,
+                    '--source_bucket': source_bucket,
+                    '--destination_bucket': destination_bucket,
+                    '--persona': persona,
+                    '--expiration_timestamp': expiration_timestamp
+                },
+                #AllocatedCapacity=2,
+                Timeout=5,
+                #MaxCapacity=3,
+                #SecurityConfiguration='string',
+                NotificationProperty={
+                    'NotifyDelayAfter': 5
+                },
+                WorkerType='Standard',
+                NumberOfWorkers=5
+              )
+            
+            return "pass"
+  #Spark Job creation
+  MDMGlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "sparkjob_mdm_role"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "*"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - s3:*
+                  - s3-object-lambda:*
+                Resource: "*"
+  MDMDataMask:
+    Type: AWS::Glue::Job
+    Properties:
+      Role: !GetAtt MDMGlueServiceRole.Arn
+      Description: Mask the PII Information
+      Command:
+        Name: glueetl
+        ScriptLocation:
+          s3://mdm-govern-data-test/sourcecode/datamask.py
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 5
+      Name: MDMDataMask
+  #Create Lambda function for delete the bucket
+  MDMDeleteLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub 'mdm-delete-lambda-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MDMDeleteLambda:*:*'
+              - Effect: Allow
+                Action: 
+                  - s3:*
+                  - s3-object-lambda:*
+                Resource: '*' 
+  # New Code
+  SchDeleteLambdaRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: SchDeleteLambdaRule
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MDMDeleteLambda.Arn
+          Id: !Ref MDMDeleteLambda
+      #RoleArn: !GetAtt 
+      #  - EventBridgeIAMrole
+      #  - Arn
+  EventBridgeIAMrole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: PutEventsDestinationBus
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'events:PutEvents'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MDMDeleteLambda:*:*'
+  # MDMLambdaDelSourceMapping:
+  #   Type: 'AWS::Lambda::EventSourceMapping'
+  #   DependsOn:
+  #     - SchDeleteLambdaRule
+  #     - MDMDeleteLambda
+  #   Properties:
+  #     BatchSize: 5
+  #     Enabled: true
+  #     EventSourceArn: !GetAtt SchDeleteLambdaRule.Arn
+  #     FunctionName: !GetAtt MDMDeleteLambda.Arn
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: MDMDeleteLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - MDMDeleteLambda
+        - Arn
+  MDMdelLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties: 
+      LogGroupName: !Sub '/aws/lambda/MDMDeleteLambda'
+      #LogGroupName: 'mdm-delete-lambda'
+      RetentionInDays: 3  
+  MDMDeleteLambda:
+    Type: 'AWS::Lambda::Function'
+    DependsOn:
+      - MDMDeleteLambdaRole
+      - MDMdelLogGroup
+    Properties:
+      Description: 'Cloud event triggered lambda.'
+      FunctionName: !Sub 'MDMDeleteLambda'
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 30
+      TracingConfig:
+        Mode: Active
+      #CodeUri: s3://bucketname/path
+      Role: !GetAtt MDMDeleteLambdaRole.Arn
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import json
+          import boto3
+          def lambda_handler(event, context):
+                s3 = boto3.resource('s3')
+                bucket = s3.Bucket('sr-test-datalake')
+                for obj in bucket.objects.filter(Prefix='yellocabmasked'):
+                    print('I am deleting object')
+                    s3.Object(bucket.name,obj.key).delete()          
+            return "pass"
