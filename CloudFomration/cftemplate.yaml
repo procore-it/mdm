@@ -1,3 +1,5 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
 Description: API Gateway integration with SQS
 Outputs:
   ApiEndpoint:
@@ -83,14 +85,22 @@ Resources:
             },
             "expiration_timestamp": {
               "type": "string"
-            }
+            },
+            "email":{
+              "type": "string"
+            },
+            "isencryption":{
+              "type": "string"
+              }
           },
           "required": [
             "source_system_name",
             "source_bucket",
             "destination_bucket",
             "persona",
-            "expiration_timestamp"
+            "expiration_timestamp",
+            "email",
+            "isencryption"
           ]
         }
   RequestValidator:
@@ -287,17 +297,22 @@ Resources:
               destination_bucket = str(payload["destination_bucket"])
               persona = str(payload["persona"])
               expiration_timestamp = str(payload["expiration_timestamp"])
+              email = str(payload["email"])
+              isencryption = str(payload["isencryption"])
               print("paylaod proceesed")
-              #payload.pop("source_system_name")
-              #payload.pop("event_outcome")
+              
+              JobNameValue = 'MDM_Mask_Enc_Data_Job'
+
               response = client.start_job_run(
-                JobName='MDMDataMask',
+                JobName=JobNameValue,
                 Arguments={
                     '--source_system_name': source_system_name,
                     '--source_bucket': source_bucket,
                     '--destination_bucket': destination_bucket,
                     '--persona': persona,
-                    '--expiration_timestamp': expiration_timestamp
+                    '--expiration_timestamp': expiration_timestamp,
+                    '--email': email,
+                    '--isencryption':isencryption
                 },
                 #AllocatedCapacity=2,
                 Timeout=5,
@@ -338,34 +353,34 @@ Resources:
                   - s3:*
                   - s3-object-lambda:*
                 Resource: "*"
+  #create a glue job for data-encryption
   MDMDataMask:
     Type: AWS::Glue::Job
     Properties:
       Role: !GetAtt MDMGlueServiceRole.Arn
-      Description: Mask the PII Information
+      Description: Encrypt/Mask the PII Information based on the input from API call
       Command:
         Name: glueetl
         ScriptLocation:
-          s3://mdm-govern-data-test/sourcecode/datamask.py
+          s3://mdm-govern-data-test/sourcecode/mdm_Mask_or_Encrypt_PII_Value.py
       AllocatedCapacity: 5
       ExecutionProperty:
         MaxConcurrentRuns: 5
-      Name: MDMDataMask
-  #Create Lambda function for delete the bucket
-  MDMDeleteLambdaRole:
-    Type: 'AWS::IAM::Role'
+      Name: MDMDataEncryption
+
+  #create basic role for execution and log of lambda function
+  LambdaBasicRole:
+    Type: AWS::IAM::Role
     Properties:
+      RoleName: LambdaBasicRole
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-        - PolicyName: !Sub 'mdm-delete-lambda-policy'
+        - PolicyName: AWSLambdaBasicExecutionRole
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -373,99 +388,32 @@ Resources:
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: 
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MDMDeleteLambda:*:*'
-              - Effect: Allow
-                Action: 
+                  - lambda:AddLayerVersionPermission
                   - s3:*
                   - s3-object-lambda:*
-                Resource: '*' 
-  # New Code
-  SchDeleteLambdaRule:
-    Type: AWS::Events::Rule
+                  - ses:*
+                Resource: '*'  
+#Log group to capture logs for the delete s3 object after expiry and send email to the bucket expires in 5 days lambda function 
+  Mydeletes3LogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      Description: SchDeleteLambdaRule
-      ScheduleExpression: rate(5 minutes)
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt MDMDeleteLambda.Arn
-          Id: !Ref MDMDeleteLambda
-      #RoleArn: !GetAtt 
-      #  - EventBridgeIAMrole
-      #  - Arn
-  EventBridgeIAMrole:
-    Type: 'AWS::IAM::Role'
+        LogGroupName: '/aws/lambda/lvemailanddeletes3lambfunc'
+        RetentionInDays: 1
+#Lambda function to delete the expired s3 objects and send email to the bucket expires in 5 days with scheduled event trigger
+  deleteFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: !Sub events.amazonaws.com
-            Action: 'sts:AssumeRole'
-      Path: /
-      Policies:
-        - PolicyName: PutEventsDestinationBus
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'events:PutEvents'
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MDMDeleteLambda:*:*'
-  # MDMLambdaDelSourceMapping:
-  #   Type: 'AWS::Lambda::EventSourceMapping'
-  #   DependsOn:
-  #     - SchDeleteLambdaRule
-  #     - MDMDeleteLambda
-  #   Properties:
-  #     BatchSize: 5
-  #     Enabled: true
-  #     EventSourceArn: !GetAtt SchDeleteLambdaRule.Arn
-  #     FunctionName: !GetAtt MDMDeleteLambda.Arn
-  PermissionForEventsToInvokeLambda:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName:
-        Ref: MDMDeleteLambda
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn:
-        Fn::GetAtt:
-        - MDMDeleteLambda
-        - Arn
-  MDMdelLogGroup:
-    Type: 'AWS::Logs::LogGroup'
-    Properties: 
-      LogGroupName: !Sub '/aws/lambda/MDMDeleteLambda'
-      #LogGroupName: 'mdm-delete-lambda'
-      RetentionInDays: 3  
-  MDMDeleteLambda:
-    Type: 'AWS::Lambda::Function'
-    DependsOn:
-      - MDMDeleteLambdaRole
-      - MDMdelLogGroup
-    Properties:
-      Description: 'Cloud event triggered lambda.'
-      FunctionName: !Sub 'MDMDeleteLambda'
-      Handler: index.lambda_handler
-      Runtime: python3.7
-      MemorySize: 128
-      Timeout: 30
-      TracingConfig:
-        Mode: Active
-      #CodeUri: s3://bucketname/path
-      Role: !GetAtt MDMDeleteLambdaRole.Arn
-      Code:
-        ZipFile: |
-          from __future__ import print_function
-          import json
-          import boto3
-          def lambda_handler(event, context):
-                s3 = boto3.resource('s3')
-                bucket = s3.Bucket('sr-test-datalake')
-                for obj in bucket.objects.filter(Prefix='yellocabmasked'):
-                    print('I am deleting object')
-                    s3.Object(bucket.name,obj.key).delete()          
-            return "pass"
+      Description: Cloud event triggered lambda to delete expired s3 bucket
+      FunctionName: lvemailanddeletes3lambfunc
+      Handler: emailanddeletes3_lambdafunction.lambda_handler
+      Runtime: python3.9
+      Layers: 
+        - arn:aws:lambda:us-west-2:785368447960:layer:pymysqllayer:1
+      Role: !GetAtt LambdaBasicRole.Arn
+      CodeUri: s3://mdm-govern-data-test/sourcecode/emailanddeletes3_lambdafunction.zip
+      Events:
+        ScheduledEvent:
+          Name: Every5min
+          Type: Schedule
+          Properties:
+            Schedule: rate(1440 minutes)

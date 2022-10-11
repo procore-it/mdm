@@ -1,0 +1,12 @@
+API URL : https://9xok99m0w3.execute-api.us-west-2.amazonaws.com/prod/MDM/logs
+
+BODY:
+{
+    "source_system_name": "Postman API Test",
+    "source_bucket":"source bucket name",
+    "destination_bucket":"destination bucket name",
+    "persona":"Persona name",
+    "expiration_timestamp":"2022-05-31",
+    "email":"recipient email address",
+    "isencryption":"true"
+}
